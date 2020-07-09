@@ -24,10 +24,13 @@
 #define VALUE_KEY "value"
 #define COUNT_OF(x) ((sizeof(x) / sizeof(0 [x])) / ((size_t)(!(sizeof(x) % sizeof(0 [x])))))
 #define SWITCH_PIN 5
+#define DEVICE_ID "Motor-Relay-01"
 
-class CustomLogger {
+class CustomLogger
+{
 public:
-  static void log(const char *msg) {
+  static void log(const char *msg)
+  {
     Serial.print("[Serial Logger] ");
     Serial.println(msg);
   }
@@ -41,6 +44,19 @@ DNSServer dns;
 bool subscribed = false;
 bool lastValue = false;
 
+void updateValueTelemetry(bool value)
+{
+  Serial.println("Sending telemetry data...");
+  const int data_items = 1;
+  Telemetry data[data_items] = {
+      {"value", value}};
+
+  // // Uploads new telemetry to ThingsBoard using MQTT.
+  // // See https://thingsboard.io/docs/reference/mqtt-api/#telemetry-upload-api
+  // // for more details
+  tb.sendTelemetry(data, data_items);
+}
+
 RPC_Response setValue(const RPC_Data &data)
 {
   bool enabled = data[VALUE_KEY];
@@ -48,6 +64,7 @@ RPC_Response setValue(const RPC_Data &data)
   Serial.println("Received rpc request,");
   Serial.print("value:");
   Serial.print(enabled);
+  updateValueTelemetry(enabled);
   digitalWrite(SWITCH_PIN, enabled);
   return RPC_Response(VALUE_KEY, lastValue);
 }
@@ -97,6 +114,22 @@ void saveConfigCallback()
 {
   Serial.println("Should save config");
   shouldSaveConfig = true;
+}
+
+void saveConfig(DynamicJsonDocument &json)
+{
+  Serial.println("saving config");
+
+  File configFile = SPIFFS.open("/config.json", "w");
+  if (!configFile)
+  {
+    Serial.println("failed to open config file for writing");
+  }
+
+  serializeJson(json, Serial);
+
+  serializeJson(json, configFile);
+  configFile.close();
 }
 
 void setup()
@@ -189,7 +222,7 @@ void setup()
   //if it does not connect it starts an access point with the specified name
   //here  "AutoConnectAP"
   //and goes into a blocking loop awaiting configuration
-  if (!wifiManager.autoConnect("Motor-Relay-01"))
+  if (!wifiManager.autoConnect(DEVICE_ID))
   {
     Serial.println("failed to connect and hit timeout");
     delay(3000);
@@ -209,24 +242,12 @@ void setup()
   if (shouldSaveConfig)
   {
     Serial.println("saving config");
-    // DynamicJsonBuffer jsonBuffer;
-    //  jsonBuffer.createObject();
+
     DynamicJsonDocument json(1024);
     json["tb_server"] = tb_server;
     json["tb_token"] = tb_token;
 
-    File configFile = SPIFFS.open("/config.json", "w");
-    if (!configFile)
-    {
-      Serial.println("failed to open config file for writing");
-    }
-
-    serializeJson(json, Serial);
-    // json.printTo(Serial);
-    // json.printTo(configFile);
-    serializeJson(json, configFile);
-    configFile.close();
-    //end save
+    saveConfig(json);
   }
 
   Serial.println("local ip");
@@ -244,33 +265,25 @@ void loop()
     Serial.print(tb_server);
     Serial.print(" with token ");
     Serial.println(tb_token);
-    if (!tb.connect(tb_server, tb_token))
+    if (tb.connect(tb_server, tb_token))
     {
-      Serial.println("Failed to connect, retrying ...");
-      return;
+      // setting the motor swith to off when the device restarts
+      updateValueTelemetry(false);
     }
+
+    Serial.println("Failed to connect, retrying ...");
+    return;
   }
 
   subscribeToRPC();
 
-  Serial.println("Sending telemetry data...");
-
-  const int data_items = 1;
-  Telemetry data[data_items] = {
-      {"value", false}
-  };
-
-  // // Uploads new telemetry to ThingsBoard using MQTT.
-  // // See https://thingsboard.io/docs/reference/mqtt-api/#telemetry-upload-api
-  // // for more details
-  tb.sendTelemetry(data, data_items);
-
   Serial.println("Sending attributes data...");
 
-  const int attribute_items = 2;
+  const int attribute_items = 3;
   Attribute attributes[attribute_items] = {
       {"device_type", "switch"},
       {"active", true},
+      {"isOn", lastValue},
   };
 
   // Publish attribute update to ThingsBoard using MQTT.
